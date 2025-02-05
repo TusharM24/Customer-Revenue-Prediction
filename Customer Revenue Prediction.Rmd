@@ -1,0 +1,791 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+#Library imports
+```{r}
+library(mice)
+library(party)
+library(tidyverse)
+#library(MASS)
+library(VIM)
+library(pls)
+library(glmnet)
+library(caret)
+library(earth)
+library(car)
+library(partykit)
+```
+
+#Reading Train and Test Datasets
+```{r}
+Train<-read.csv("C:/Users/Tushar/Downloads/Train.csv/Train.csv",na.strings = c("","NA"))
+Test<-read.csv("C:/Users/Tushar/Downloads/Train.csv/Test.csv",na.strings = c("","NA"))
+```
+
+#Splitting Train Data into numeric and Discrete
+```{r}
+TrainNumeric <- Train %>%
+  select_if(is.numeric)
+
+
+TrainDiscrete <- Train[, sapply(Train, function(x) !is.numeric(x))]%>%
+  select(-date)
+
+```
+
+
+```{r}
+#For Test Data
+TestNumeric <- Test %>%
+  select_if(is.numeric)
+
+TestDiscrete <- Test[, sapply(Test, function(x) !is.numeric(x))]%>%
+  #select_if(~ !is.numeric(.) && . != "date")
+  select(-date)
+
+#TestDiscrete <- Test %>%
+#transmute_if(is.character, as_factor)
+#select_if(is.character)
+
+#glimpse(TrainDiscrete)
+```
+
+#Quantile Functions 
+```{r}
+Q1<-function(x,na.rm=TRUE) {
+  quantile(x,na.rm=na.rm)[2]
+}
+Q3<-function(x,na.rm=TRUE) {
+  quantile(x,na.rm=na.rm)[4]
+}
+```
+
+#Train Nummeric Summary
+```{r}
+TrainNumericSummary <- function(x){
+  c(length(x), n_distinct(x),((n_distinct(x)/length(x))*100), sum(is.na(x)),((sum(is.na(x))/length(x))*100), mean(x, na.rm=TRUE),
+    min(x,na.rm=TRUE), Q1(x,na.rm=TRUE), median(x,na.rm=TRUE), Q3(x,na.rm=TRUE),
+    max(x,na.rm=TRUE), sd(x,na.rm=TRUE))
+}
+
+TrainNumericTableSummary <- TrainNumeric %>%
+  summarize(across(everything(), TrainNumericSummary))
+
+```
+
+#Test
+```{r}
+TestNumericSummary <- function(x){
+  c(length(x), n_distinct(x),((n_distinct(x)/length(x))*100), sum(is.na(x)),((sum(is.na(x))/length(x))*100), mean(x, na.rm=TRUE),
+    min(x,na.rm=TRUE), Q1(x,na.rm=TRUE), median(x,na.rm=TRUE), Q3(x,na.rm=TRUE),
+    max(x,na.rm=TRUE), sd(x,na.rm=TRUE))
+}
+
+TestNumericTableSummary <- TestNumeric %>%
+  summarize(across(everything(), TestNumericSummary))
+
+
+```
+#Train
+```{r}
+
+# View the structure of 'numericSummary'
+#glimpse(numericSummary)
+TrainNumericTableSummary <-cbind(
+  stat=c("n","unique","Unique_percentage","missing","missing_Percentage", "mean","min","Q1","median","Q3","max","sd"),
+  TrainNumericTableSummary)
+#glimpse(TrainNumericTableSummary)
+
+```
+
+#Test
+```{r}
+TestNumericTableSummary <-cbind(
+  stat=c("n","unique","Unique_percentage","missing","missing_Percentage", "mean","min","Q1","median","Q3","max","sd"),
+  TestNumericTableSummary)
+#glimpse(TestNumericTableSummary)
+
+```
+
+
+
+#Train Numeric Data Report
+```{r}
+TrainNumericSummaryFinal <- TrainNumericTableSummary %>%
+  pivot_longer("sessionId":"revenue", names_to = "variable", values_to = "value") %>%
+  pivot_wider(names_from = stat, values_from = value)%>% 
+  #mutate(missing_pct = 100*missing/n,
+  #unique_pct = 100*unique/n) %>%
+  select(variable, n, missing,  unique, everything())
+
+#glimpse(TrainNumericSummaryFinal)
+```
+
+#Test Numeric Data Report
+```{r}
+TestNumericSummaryFinal <- TestNumericTableSummary %>%
+  pivot_longer("sessionId":"newVisits", names_to = "variable", values_to = "value") %>%
+  pivot_wider(names_from = stat, values_from = value)%>% 
+  #mutate(missing_pct = 100*missing/n,
+  #unique_pct = 100*unique/n) %>%
+  select(variable, n, missing,  unique, everything())
+
+glimpse(TestNumericSummaryFinal)
+```
+
+```{r}
+library(knitr)
+options(digits=3)
+options(scipen=99)
+```
+```{r}
+#Train Numeric Data report
+TrainNumericSummaryFinal %>% kable()
+```
+
+
+
+#Data Report for Non-Numeric Table
+#This function will work for Every column
+```{r}
+getmodes <- function(v,type=1) {
+  if(sum(is.na(v))==length(v)){
+    return(NA)
+  }
+  tbl <- table(v)
+  m1<-which.max(tbl)
+  if (type==1) {
+    return (names(m1)) #1st mode
+  }
+  else if (type==2) {
+    return (names(which.max(tbl[-m1]))) #2nd mode
+  }
+  else if (type==-1) {
+    return (names(which.min(tbl))) #least common mode
+  }
+  else {
+    stop("Invalid type selected")
+  }
+}
+
+getmodesCnt <- function(v,type=1) {
+  tbl <- table(v)
+  m1<-which.max(tbl)
+  if (type==1) {
+    return (max(tbl)) #1st mode freq
+  }
+  else if (type==2) {
+    return (max(tbl[-m1])) #2nd mode freq
+  }
+  else if (type==-1) {
+    return (min(tbl)) #least common freq
+  }
+  else {
+    stop("Invalid type selected")
+  }
+}
+```
+
+
+# This function will run the get modes individually for every column and display
+```{r}
+getmodes_df <- function(df, type = 1) {
+  modes_list <- list()  # Create an empty list to store modes for each column
+  
+  for (col in colnames(df)) {
+    modes_list[[col]] <- getmodes(df[[col]], type)  # Apply getmodes to each column
+  }
+  
+  return(modes_list)
+}
+```
+
+
+#getmodes_df(TrainDiscrete,type=1)
+#getmodes_df(TrainDiscrete,type=2)
+#getmodes_df(TrainDiscrete,type=-1)
+
+```{r}
+TrainDiscreteSummary <- function(x){
+  c(length(x), n_distinct(x), sum(is.na(x)),  getmodes(x, type=1), getmodesCnt(x, type =1),
+    getmodes(x, type=2), getmodesCnt(x, type =2), getmodes(x, type= -1), getmodesCnt(x, type = -1))
+}
+
+result1 <- lapply(TrainDiscrete, TrainDiscreteSummary)
+result_matrix <- do.call(cbind, result1)
+
+# Convert the matrix into a dataframe
+TrainDiscreteTableSummary <- as.data.frame(result_matrix)
+```
+
+```{r}
+#test
+result2 <- lapply(TestDiscrete, TrainDiscreteSummary)
+result_matrix <- do.call(cbind, result2)
+
+# Convert the matrix into a dataframe
+TestDiscreteTableSummary <- as.data.frame(result_matrix)
+
+# Assign the first vector as column names
+#colnames(result_df) <- result_df[1, ]
+#result_df <- as.data.frame(do.call(cbind, result1))
+
+#TrainDiscreteTableSummary <- TrainDiscrete %>%
+#summarize(across(everything(), TrainDiscreteSummary))
+
+```
+
+
+#Train Discrete Summary Report
+```{r}
+TrainDiscreteTableSummary <-cbind(
+  stat=c("n","unique","missing","1st mode", "first_mode_freq", "2nd mode", "second_mode_freq", "least common", "least common freq"),
+  TrainDiscreteTableSummary)
+
+
+DiscreteFactorSummaryFinal <- TrainDiscreteTableSummary %>%
+  pivot_longer("channelGrouping":"adwordsClickInfo.isVideoAd", names_to = "variable", values_to = "value") %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(across(c(2,3,4,6,8,10), as.double), missing_pct = 100*missing/n,
+         unique_pct = 100*unique/n, freq_ratio = as.numeric(first_mode_freq) / as.numeric(second_mode_freq))%>%
+  select(variable, n, missing, missing_pct, unique, unique_pct, freq_ratio, everything())
+#glimpse(DiscreteFactorSummaryFinal)
+
+```
+#Test Discrete Table summary report
+```{r}
+#test
+TestDiscreteTableSummary <-cbind(
+  stat=c("n","unique","missing","1st mode", "first_mode_freq", "2nd mode", "second_mode_freq", "least common", "least common freq"),
+  TrainDiscreteTableSummary)
+TestDiscreteFactorSummaryFinal <- TestDiscreteTableSummary %>%
+  pivot_longer("channelGrouping":"adwordsClickInfo.isVideoAd", names_to = "variable", values_to = "value") %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(across(c(2,3,4,6,8,10), as.double), missing_pct = 100*missing/n,
+         unique_pct = 100*unique/n, freq_ratio = as.numeric(first_mode_freq) / as.numeric(second_mode_freq))%>%
+  select(variable, n, missing, missing_pct, unique, unique_pct, freq_ratio, everything())
+glimpse(TestDiscreteFactorSummaryFinal)
+
+```
+
+
+
+#Visualizations
+#We are performing two visualizations on train data.
+
+
+```{r}
+#Train Data
+FilterTrain <- Train %>%
+mutate(operatingSystem = fct_lump_n(operatingSystem, n = 3))
+
+ggplot(FilterTrain, aes(x = deviceCategory, y = revenue, color = operatingSystem, fill=revenue>10000 )) +
+  geom_bar(stat="identity") +
+  labs(title = "Device vs.Revenue by OperatingSystem", 
+       x = "Country", y = "Region") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+#Plot is generated for Device vs Revenue for different operating Systems. From this graph we can understand that the revenue is more for Desktop devices especially with Macintosh operating system and next windows operating system.The least revenue is for tablet devices. It is evident that revenue is highest for users using Desktop with Macintosh operating system whereas least for tablet and average for mobile devices with Android operating system. This gives us a brief understanding of revenue for different devices.
+
+
+```{r}
+#Train Data
+filtered_Train1 <- Train %>%
+  mutate(networkDomain = fct_lump_n(networkDomain, n = 5),channelGrouping=fct_lump_n(channelGrouping, n=5))
+
+  ggplot(filtered_Train1,aes(x = networkDomain, y = revenue, color = channelGrouping )) +
+  geom_point() +
+  labs(title = "NetworkDomain vs.Revenue by channelGrouping", 
+       x = "NetworkDomain", y = "Revenue") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+#Plot is generated for Network Domain vs Revenue for different channels. From this graph we can understand how revenue is changing based on network domain the users are using and which channel is widely used. We can observe in comcast.net network domain most of the users are under Referral channel grouping and if also we can see for almost all the network domains are falling under Direct or Referral channel grouping. So we can conclude revenue is highest for Direct or Referral channel grouping.
+
+
+```{r}
+
+library(knitr)
+options(digits=3)
+options(scipen=99)
+```
+
+#DiscreteFactorSummaryFinal %>% kable()
+
+
+#beginning of Data Preparation and Preprocessing
+#Since we have to do preprocessing for both Test Data and Training Data we'll create functions
+
+```{r}
+#Train Discrete variables
+ggplot(data = DiscreteFactorSummaryFinal,mapping = ( aes(x = variable, y =missing_pct, fill=missing_pct>80 ))) +
+  geom_bar(stat="identity") +
+  labs(
+    title = "Missing Value Percentage by Column",
+    x = "Column",
+    y = "Missing Percentage"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+
+
+```
+```{r}
+#Train Numeric variables
+ggplot(data = TrainNumericSummaryFinal,mapping = ( aes(x = variable, y =missing_Percentage, fill=missing_Percentage>75 ))) +
+  geom_bar(stat="identity") +
+  labs(
+    title = "Missing Value Percentage by Column",
+    x = "Column",
+    y = "Missing Percentage"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+```
+
+#removing columns with more than 80% missing values
+```{r} 
+columns_to_remove <- c("adContent", "adwordsClickInfo.adNetworkType", "adwordsClickInfo.gclId","adwordsClickInfo.isVideoAd","campaign","adwordsClickInfo.slot","adwordsClickInfo.page","keyword")
+```
+
+#Removing selected columns for train
+```{r}
+Train_preprocess <- Train %>%
+  select(-one_of(columns_to_remove))
+#Train_preprocess
+```
+
+
+#Removing selected columns for test
+```{r}
+Test_preprocess <- Test %>%
+  select(-one_of(columns_to_remove))
+#Test_preprocess
+
+```
+
+
+
+#Train Data 
+```{r}
+Train_preprocess.imp<-Train_preprocess
+columns_to_impute <- c("pageviews")
+
+for (col_name in columns_to_impute) {
+  missing <- is.na(Train_preprocess[[col_name]])
+  if (sum(missing) > 0) {
+    Train_preprocess.imp[missing, col_name] <- mice.impute.pmm(
+      Train_preprocess.imp[[col_name]], 
+      !missing, 
+      Train_preprocess.imp$custId
+    )
+  }
+}
+
+```
+
+#test
+```{r}
+Test_preprocess.imp<-Test_preprocess
+columns_to_impute <- c( "pageviews")
+
+for (col_name in columns_to_impute) {
+  missing <- is.na(Test_preprocess[[col_name]])
+  if (sum(missing) > 0) {
+    Test_preprocess.imp[missing, col_name] <- mice.impute.pmm(
+      Test_preprocess.imp[[col_name]], 
+      !missing, 
+      Test_preprocess.imp$custId
+    )
+  }
+}
+```
+
+```{r}
+#Replacing Na's with zero's to create two factor variables for Train
+Train_preprocess.imp$bounces <- ifelse(is.na(Train_preprocess.imp$bounces), 0, Train_preprocess.imp$bounces)
+Train_preprocess.imp$newVisits <- ifelse(is.na(Train_preprocess.imp$newVisits), 0, Train_preprocess.imp$newVisits)
+
+#Replacing Na's with zero's to create two factor variables
+Test_preprocess.imp$bounces <- ifelse(is.na(Test_preprocess.imp$bounces), 0, Test_preprocess.imp$bounces)
+Test_preprocess.imp$newVisits <- ifelse(is.na(Test_preprocess.imp$newVisits), 0, Test_preprocess.imp$newVisits)
+
+
+```
+
+#install.packages("party")
+```{r}
+library(party)
+
+```
+
+
+#so We'll first impute columns with missing values percent of less than 10% by replacing them with mode of the column. But,if missing values is greater than 7000, that is roughly 10% of the Total column then we'll replace NA values with 'Other' and create a seperate level of category for the misiing values
+
+```{r}
+#Train
+Train_preprocess.imp1<- Train_preprocess.imp
+col_names<- names(Train_preprocess.imp1)
+for (col in col_names)
+{
+  #print(Train_preprocess.imp1[[col]])
+  missing <- is.na(Train_preprocess.imp1[[col]])
+  if(is.character(Train_preprocess.imp1[[col]])){
+    if (sum(missing) < 7000 & sum(missing) > 0) {
+      Train_preprocess.imp1[[col]][is.na(Train_preprocess.imp1[[col]])] <- getmodes(Train_preprocess.imp1[[col]])
+    }
+    else{
+      Train_preprocess.imp1[[col]][is.na(Train_preprocess.imp1[[col]])] <- "Other"
+      
+    }
+  }
+}
+```
+
+#printing the number of missing values in the entire table
+```{r}
+total_missing_values<-sum(is.na(Train_preprocess.imp1))
+total_missing_values
+
+```
+
+```{r}
+#Test
+Test_preprocess.imp1<- Test_preprocess.imp
+col_names<- names(Test_preprocess.imp1)
+for (col in col_names)
+{
+  #print(Train_preprocess.imp1[[col]])
+  missing <- is.na(Test_preprocess.imp1[[col]])
+  if(is.character(Test_preprocess.imp1[[col]])){
+    if (sum(missing) < 7000 & sum(missing) > 0) {
+      Test_preprocess.imp1[[col]][is.na(Test_preprocess.imp1[[col]])] <- getmodes(Test_preprocess.imp1[[col]])
+    }
+    else{
+      Test_preprocess.imp1[[col]][is.na(Test_preprocess.imp1[[col]])] <- "Other"
+      
+    }
+  }
+}
+```
+
+#printing the number of missing values in the entire table
+```{r}
+total_missing_values<-sum(is.na(Test_preprocess.imp1))
+total_missing_values
+```
+
+
+#Preprocessing step 3:Converting all characters to Factor Variables
+```{r}
+#Train
+char_vars <- sapply(Train_preprocess.imp1, is.character)
+
+Train_preprocess.imp1[char_vars] <- lapply(Train_preprocess.imp1[char_vars], as.factor)
+```
+
+
+#test
+```{r}
+char_vars <- sapply(Test_preprocess.imp1, is.character)
+
+Test_preprocess.imp1[char_vars] <- lapply(Test_preprocess.imp1[char_vars], as.factor)
+```
+
+
+
+
+```{r}
+#performing PCA
+#Hpca <-prcomp(TrainNumeric,scale. = TRUE)
+
+#Hpca
+
+#Plottinh LDA
+#lda_result <- lda(revenue ~ ., data = Train_preprocess.imp1)
+# Print the LDA results
+#lda_result
+
+#<-Glass[, sapply(Glass, is.numeric)]
+```
+#preprocessing step 4:Removing Outliers
+
+```{r}
+corMat <- cor(TrainNumeric)
+corMat
+```
+
+#SessionID and cust Id have high correlation so we cannot use them together to avoid multicollinearity.
+
+
+
+
+#Grouping the entire table on the basis of  Cust ID
+```{r}
+
+TrainGroupedData<-Train_preprocess.imp1 %>%
+  group_by(custId)%>%
+  summarize(sessionId= max(sessionId),visitNumber=max(visitNumber),timeSinceLastVisit=mean(timeSinceLastVisit),continent=getmodes(continent),
+            subContinent=getmodes(subContinent),country=getmodes(country),region=getmodes(region),city=getmodes(city),
+            metro=getmodes(metro),channelGrouping=getmodes(channelGrouping),visitStartTime=min(visitStartTime),
+            browser=getmodes(browser), operatingSystem=getmodes(operatingSystem),isMobile=getmodes(isMobile),
+            deviceCategory=getmodes(deviceCategory),networkDomain=getmodes(networkDomain),topLevelDomain=getmodes(topLevelDomain),
+            source=getmodes(source),medium=getmodes(medium),isTrueDirect=getmodes(isTrueDirect),
+            referralPath=getmodes(referralPath),pageviews=sum(pageviews),bounces=getmodes(bounces),newVisits=getmodes(newVisits),
+            revenue=log(sum(revenue+1)))%>%
+  as_tibble()
+char_vars <- sapply(TrainGroupedData, is.character)
+
+TrainGroupedData[char_vars] <- lapply(TrainGroupedData[char_vars], as.factor)
+
+
+```
+
+```{r}
+glimpse(TrainGroupedData)
+```
+
+#test
+
+```{r}
+TestGroupedData<-Test_preprocess.imp1 %>%
+  group_by(custId)%>%
+  summarize(sessionId=max(sessionId),visitNumber=max(visitNumber),timeSinceLastVisit=mean(timeSinceLastVisit),continent=getmodes(continent),
+            subContinent=getmodes(subContinent),country=getmodes(country),region=getmodes(region),city=getmodes(city),
+            metro=getmodes(metro),channelGrouping=getmodes(channelGrouping),visitStartTime=min(visitStartTime),
+            browser=getmodes(browser), operatingSystem=getmodes(operatingSystem),isMobile=getmodes(isMobile),
+            deviceCategory=getmodes(deviceCategory),networkDomain=getmodes(networkDomain),topLevelDomain=getmodes(topLevelDomain),
+            source=getmodes(source),medium=getmodes(medium),isTrueDirect=getmodes(isTrueDirect),
+            referralPath=getmodes(referralPath),pageviews=sum(pageviews),bounces=getmodes(bounces),newVisits=getmodes(newVisits))%>%
+  as_tibble()
+char_vars <- sapply(TestGroupedData, is.character)
+
+TestGroupedData[char_vars] <- lapply(TestGroupedData[char_vars], as.factor)
+
+```
+
+```{r}
+#Doing Final Conversions
+#columns_to_convert <- c("bounces", "newVisits")
+#TrainGroupedData[columns_to_convert] <- lapply(TrainGroupedData[columns_to_convert], as.factor)
+
+# Calculate the mean of the non-zero values
+#mean_non_zero <- mean(TrainGroupedData$timeSinceLastVisit[TrainGroupedData$timeSinceLastVisit != 0])
+```
+
+Preprocessing Part 3:
+Transforminmg the predictor values to log(x+1) form
+```{r}
+#library(MASS)
+
+#boxcox
+TrainGroupedData$timeSinceLastVisit <- log(TrainGroupedData$timeSinceLastVisit+1)
+TestGroupedData$timeSinceLastVisit <- log(TestGroupedData$timeSinceLastVisit+1)
+
+TrainGroupedData$pageviews <- log(TrainGroupedData$pageviews+1)
+TestGroupedData$pageviews <- log(TestGroupedData$pageviews+1)
+
+TrainGroupedData$visitNumber <- log(TrainGroupedData$visitNumber+1)
+TestGroupedData$visitNumber <- log(TestGroupedData$visitNumber+1)
+
+```
+
+
+```{r}
+#TestGroupedData[char_vars] <- lapply(TestGroupedData[char_vars], as.character)
+```
+
+```{r}
+#OLS Model
+ctrl <- trainControl(
+  method = "repeatedcv",       # Cross-validation method ("cv" for k-fold cross-validation)
+  number = 10,          # Number of folds (5 for 5-fold cross-validation)
+  #verboseIter = TRUE,  # Display progress
+  summaryFunction = defaultSummary  # Use default summary function
+)
+
+# Fit your model with 5-fold cross-validation
+OlsCVmodel <- train(
+  revenue ~ custId+(sessionId*visitNumber*timeSinceLastVisit*pageviews)+operatingSystem+channelGrouping+continent+deviceCategory+isMobile+medium+bounces+newVisits,
+  #revenue ~ .,# Specify the formula (dependent variable ~ predictor variables)
+  data = TrainGroupedData,   # Specify your dataset
+  method = "lm",      # Specify the modeling method (e.g., linear regression)
+  trControl = ctrl,
+  metric="RMSE"# Use the training control settings created earlier
+)
+cvsummary<-summary(OlsCVmodel)
+cvsummary
+
+#olspredictions <- predict(OlsCVmodel, newdata = TestGroupedData)
+#summary(olspredictions)
+
+
+
+
+
+#TestGroupedData1<- TestGroupedData %>%
+  #mutate(predRevenue=olspredictions)
+
+#FinalPredictions1<- TestGroupedData1 %>%
+  #select(custId, predRevenue)
+
+#write.csv(FinalPredictions, file = "filepredictionOLS.csv", row.names = FALSE)
+```
+
+```{r}
+CV_RMSE <- OlsCVmodel$results$RMSE
+CV_R2<- cvsummary$r.squared
+cat("CVRMSE:", CV_RMSE , "\n")
+
+cat("CV R-squared:",CV_R2  , "\n")
+```
+
+
+
+```{r}
+#PLS
+ctrl <- trainControl(
+  method = "cv",         # Cross-validation method (e.g., k-fold)
+  number = 5,           # Number of folds
+  savePredictions = TRUE, # Save predictions for final model
+  
+)
+
+# Perform hyperparameter tuning with cross-validation
+set.seed(123)  # For reproducibility
+ncompnum<-(seq(1,4,1))
+pls_model <- train(
+  revenue ~ custId+(sessionId*visitNumber*timeSinceLastVisit*pageviews)+operatingSystem+channelGrouping+continent+deviceCategory+isMobile+medium+bounces+newVisits,    
+  data = TrainGroupedData,                          
+  method = "pls",             
+  trControl = ctrl,              
+  #ncomp=5,
+  tuneGrid = expand.grid(ncomp = ncompnum),
+  metric="RMSE", 
+  preProc=c("center","scale"))
+
+pls_model$results
+
+
+
+```
+
+
+```{r}
+plsresults<-pls_model$results %>%
+  filter(ncomp == pls_model$bestTune$ncomp)
+
+
+plsRMSE<- plsresults$RMSE
+cat("RMSE:", plsRMSE, "\n")
+plsR2<- plsresults$Rsquared
+cat("R-squared:", plsR2, "\n")
+```
+```{r}
+plot(pls_model)
+```
+
+
+```{r}
+
+
+#Creating Lasso model
+lambda_val=seq(0,1,0.1)
+ctrl <- trainControl(
+  method = "cv",         # Cross-validation method (e.g., k-fold)
+  number = 10,           # Number of folds
+  savePredictions = TRUE, # Save predictions for final model
+  
+)
+# Perform hyperparameter tuning with cross-validation
+set.seed(123)  # For reproducibility
+Lasso_model <- train(
+  revenue ~ custId+(sessionId*visitNumber*timeSinceLastVisit*pageviews)+operatingSystem+channelGrouping+continent+deviceCategory+isMobile+medium+bounces+newVisits,     
+  data = TrainGroupedData,                          # Your response variable
+  method = "glmnet",              # Machine learning method (Ridge Regression)
+  trControl = ctrl,               # Cross-validation control
+  tuneGrid = expand.grid(lambda=lambda_val, alpha=1),
+  metric="RMSE",
+  preProc=c("center","scale")
+  )
+
+
+
+
+
+```
+
+Retrieve and display the results of Lasso hyperparameter tuning
+
+```{r}
+Lasso_model$results
+```
+
+ Filter the best result based on lambda
+```{r}
+
+Lassoresults <- Lasso_model$results %>%
+  filter(lambda == Lasso_model$bestTune$lambda)
+
+Lassoresults
+```
+
+Calculate and display RMSE (Root Mean Squared Error) and display R-squared
+
+```{r}
+rmse <- Lassoresults$RMSE
+cat("RMSE:", rmse, "\n")
+r_squared <- Lassoresults$Rsquared
+cat("R-squared:", r_squared, "\n")
+```
+We got these values for Alpha=1 and Lambda=0
+
+I have plotted a coefficient path plot to visualize how the coefficients of predictor variables change as the regularization parameter lambda varies in a Lasso model
+```{r}
+plot(Lasso_model, xvar = "lambda", label = TRUE)
+```
+
+
+
+```{r}
+#MarsModel
+#Since Mars Model takes a long time to execute, we will be posting screenshots from the R file
+ctrl <- trainControl(
+  method = "repeatedcv",              # Cross-validation method (e.g., k-fold)
+  number = 10,
+  #allowParallel = TRUE,
+   # Number of folds
+  #savePredictions = "final" ,  # Save predictions for final model
+  #summaryFunction = twoClassSummary,
+  
+)
+
+set.seed(123)  # For reproducibility
+mars_model <- train(
+  revenue ~ (visitNumber*timeSinceLastVisit*pageviews)+operatingSystem+browser+channelGrouping+continent+
+    deviceCategory+isMobile+medium+bounces+newVisits+referralPath,     
+  data = TrainGroupedData,                      # Your response variable
+  method = "earth",           # Machine learning method (MARS)
+  trControl = ctrl,           # Cross-validation control
+  metric="RMSE",
+  preProc=c("center","scale"),
+  tuneGrid = expand.grid(degree=2,nprune=15:25)
+)
+mars_model
+summary(mars_model)
+
+ mmresult <- mars_model$results %>%
++     filter(nprune == mars_model$bestTune$nprune, degree == mars_model$bestTune$degree)
+ mmresult
+```
+```{r}
+rmse <- mmresult$RMSE
+cat("RMSE:", rmse, "\n")
+
+r_squared <- mmresult$Rsquared
+ cat("R-Squared:", r_squared, "\n")
+```
+
+```{r}
+plot(mars_model)
+```
+
